@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Task Manager</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">📋 Task Manager</div>
+        <div class="nav-user">
+            <span id="userName">Loading...</span>
+            <span id="userRole" class="role-badge"></span>
+            <button id="logoutBtn" class="btn-secondary">Logout</button>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="stats-grid">
+            <div class="stat-card"><h3>Total</h3><p id="statTotal">0</p></div>
+            <div class="stat-card success"><h3>Done</h3><p id="statDone">0</p></div>
+            <div class="stat-card warning"><h3>In Progress</h3><p id="statInProgress">0</p></div>
+            <div class="stat-card info"><h3>Todo</h3><p id="statTodo">0</p></div>
+            <div class="stat-card danger"><h3>Overdue</h3><p id="statOverdue">0</p></div>
+        </div>
+
+        <div id="adminPanel" class="card hidden">
+            <h3>⚙️ Admin Panel</h3>
+            <form id="createProjectForm" class="form-row">
+                <input type="text" id="projectName" placeholder="Project Name" required>
+                <button type="submit" class="btn-primary">Create</button>
+            </form>
+            <div class="form-row" style="margin-top:1rem;">
+                <select id="selectProject" required><option value="">Select Project</option></select>
+                <input type="email" id="memberEmail" placeholder="Add member by email">
+                <button id="addMemberBtn" class="btn-primary">Add Member</button>
+            </div>
+            <form id="createTaskForm" class="form-row" style="margin-top:1rem;">
+                <input type="text" id="taskTitle" placeholder="Task Title" required>
+                <select id="taskProject" required><option value="">Select Project</option></select>
+                <select id="taskPriority"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select>
+                <input type="date" id="taskDueDate">
+                <button type="submit" class="btn-primary">Create Task</button>
+            </form>
+        </div>
+
+        <div class="card">
+            <h3> Projects</h3>
+            <div id="projectsList" class="projects-grid"></div>
+        </div>
+
+        <div class="card">
+            <h3>✅ Tasks</h3>
+            <div class="form-row">
+                <select id="filterProject"><option value="">All Projects</option></select>
+                <select id="filterStatus"><option value="">All Status</option><option value="todo">Todo</option><option value="in_progress">In Progress</option><option value="done">Done</option></select>
+            </div>
+            <div id="tasksList"></div>
+        </div>
+    </div>
+
+    <script>
+        const API = '/api';
+        const token = localStorage.getItem('access');
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+
+        if (!token) window.location.href = '/';
+
+        document.getElementById('userName').textContent = user.username || user.first_name;
+        document.getElementById('userRole').textContent = user.role.toUpperCase();
+        document.getElementById('userRole').className = `role-badge ${user.role}`;
+
+        if (user.role === 'admin') document.getElementById('adminPanel').classList.remove('hidden');
+
+        document.getElementById('logoutBtn').addEventListener('click', () => {
+            localStorage.clear();
+            window.location.href = '/';
+        });
+
+        async function fetchAPI(url, options = {}) {
+            const res = await fetch(API + url, {
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', ...options.headers },
+                ...options
+            });
+            if (!res.ok) throw new Error('API Error');
+            return res.json();
+        }
+
+        async function loadDashboard() {
+            try {
+                const projects = await fetchAPI('/projects/');
+                const tasks = await fetchAPI('/tasks/');
+                
+                renderProjects(projects);
+                populateSelects(projects);
+                renderTasks(tasks);
+                updateStats(tasks);
+            } catch (e) { console.error(e); }
+        }
+
+        function renderProjects(projects) {
+            document.getElementById('projectsList').innerHTML = projects.map(p => 
+                `<div class="project-item"><strong>${p.name}</strong><br><small>${p.description || ''}</small></div>`
+            ).join('');
+        }
+
+        function populateSelects(projects) {
+            ['selectProject', 'taskProject', 'filterProject'].forEach(id => {
+                const el = document.getElementById(id);
+                el.innerHTML = id === 'filterProject' ? '<option value="">All Projects</option>' : '<option value="">Select Project</option>';
+                projects.forEach(p => el.innerHTML += `<option value="${p.id}">${p.name}</option>`);
+            });
+        }
+
+        function renderTasks(tasks) {
+            const pid = document.getElementById('filterProject').value;
+            const status = document.getElementById('filterStatus').value;
+            let filtered = tasks;
+            if (pid) filtered = filtered.filter(t => t.project == pid);
+            if (status) filtered = filtered.filter(t => t.status === status);
+
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('tasksList').innerHTML = filtered.map(t => {
+                const overdue = t.due_date && t.due_date < today && t.status !== 'done';
+                return `<div class="task-item ${overdue ? 'overdue' : ''}">
+                    <div class="task-header"><strong>${t.title}</strong><span class="priority ${t.priority}">${t.priority}</span></div>
+                    <div class="task-meta"> ${t.assigned_to_name || 'Unassigned'} | 📅 ${t.due_date || 'No date'}</div>
+                    <div class="task-actions">
+                        <span class="status-badge ${t.status}">${t.status.replace('_', ' ')}</span>
+                        ${user.role === 'admin' ? `<button class="btn-danger" onclick="deleteTask(${t.id})">Delete</button>` : 
+                          t.assigned_to == user.id ? `<select onchange="updateStatus(${t.id}, this.value)"><option value="todo" ${t.status==='todo'?'selected':''}>Todo</option><option value="in_progress" ${t.status==='in_progress'?'selected':''}>In Progress</option><option value="done" ${t.status==='done'?'selected':''}>Done</option></select>` : ''}
+                    </div>
+                </div>`;
+            }).join('') || '<p>No tasks found.</p>';
+        }
+
+        function updateStats(tasks) {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('statTotal').textContent = tasks.length;
+            document.getElementById('statDone').textContent = tasks.filter(t => t.status === 'done').length;
+            document.getElementById('statInProgress').textContent = tasks.filter(t => t.status === 'in_progress').length;
+            document.getElementById('statTodo').textContent = tasks.filter(t => t.status === 'todo').length;
+            document.getElementById('statOverdue').textContent = tasks.filter(t => t.due_date && t.due_date < today && t.status !== 'done').length;
+        }
+
+        window.deleteTask = async (id) => { if(confirm('Delete?')) { await fetchAPI(`/tasks/${id}/`, {method: 'DELETE'}); loadDashboard(); }};
+        window.updateStatus = async (id, status) => { await fetchAPI(`/tasks/${id}/`, {method: 'PATCH', body: JSON.stringify({status})}); loadDashboard(); };
+
+        document.getElementById('filterProject').addEventListener('change', () => fetchAPI('/tasks/').then(renderTasks));
+        document.getElementById('filterStatus').addEventListener('change', renderTasks);
+
+        document.getElementById('createProjectForm').addEventListener('submit', async e => {
+            e.preventDefault();
+            await fetchAPI('/projects/', {method: 'POST', body: JSON.stringify({name: document.getElementById('projectName').value})});
+            e.target.reset(); loadDashboard();
+        });
+
+        document.getElementById('addMemberBtn').addEventListener('click', async () => {
+            const pid = document.getElementById('selectProject').value;
+            if (!pid) return alert('Select project');
+            await fetchAPI(`/projects/${pid}/add_member/`, {method: 'POST', body: JSON.stringify({email: document.getElementById('memberEmail').value})});
+            document.getElementById('memberEmail').value = '';
+            alert('Member added!');
+        });
+
+        document.getElementById('createTaskForm').addEventListener('submit', async e => {
+            e.preventDefault();
+            await fetchAPI('/tasks/', {method: 'POST', body: JSON.stringify({
+                title: document.getElementById('taskTitle').value,
+                project: document.getElementById('taskProject').value,
+                priority: document.getElementById('taskPriority').value,
+                due_date: document.getElementById('taskDueDate').value || null
+            })});
+            e.target.reset(); loadDashboard();
+        });
+
+        loadDashboard();
+    </script>
+</body>
+</html>
